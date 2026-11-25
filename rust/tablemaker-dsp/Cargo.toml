@@ -1,0 +1,9 @@
+[package]
+name = "tablemaker-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cycle extraction and wavetable assembly from audio clips"
+
+[dependencies]
+rustfft.workspace = true

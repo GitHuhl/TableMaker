@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["tablemaker-dsp", "tablemaker-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+rustfft = "6"
+clap = { version = "4", features = ["derive"] }
+tablemaker-dsp = { path = "tablemaker-dsp" }
+
+# Oversampling, pitch tracking and cycle rendering are heavy number crunching:
+# unoptimised, a few seconds of audio takes minutes (and so do the tests).
+# Optimised even in development builds; the rest stays quick to build.
+[profile.dev.package.tablemaker-dsp]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.package.rustfft]
+opt-level = 3
