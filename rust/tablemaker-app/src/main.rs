@@ -1,15 +1,18 @@
-//! `tablemaker`: build wavetables from audio clips of one source.
+//! `tablemaker`: turn recordings of a voice into an instrument.
+
+mod voice;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use tablemaker_dsp::cycles::{self, ClipAnalysis, ExtractSettings};
 use tablemaker_dsp::pitch::PitchSettings;
+use tablemaker_dsp::speaker::SpeakerSettings;
 use tablemaker_dsp::table::{self, Morph, Normalize, Order, Select, TableSettings};
 use tablemaker_dsp::{preview, report, wav};
 
 #[derive(Parser)]
-#[command(name = "tablemaker", version, about = "Build wavetables from audio clips of one source", long_about = None)]
+#[command(name = "tablemaker", version, about = "Turn recordings of a voice into an instrument", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -17,16 +20,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Analyse a speaker (files and/or directories) and write their voice file:
+    /// pitch, voice quality and the vowel table the instrument plays.
+    Voice(VoiceArgs),
     /// Extract cycles from the clips and mash them into one wavetable.
     Build(BuildArgs),
     /// Report pitch and how many usable cycles each clip has, without writing a table.
     Analyze {
-        /// WAV clips (any channel count, PCM or float).
+        /// WAV files and/or directories of them (any channel count, PCM or float).
         #[arg(required = true)]
         clips: Vec<PathBuf>,
         #[command(flatten)]
         extract: ExtractArgs,
     },
+}
+
+#[derive(Args)]
+struct VoiceArgs {
+    /// WAV files and/or directories of them (searched recursively).
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+    /// The voice file to write.
+    #[arg(short, long, default_value = "voice.json")]
+    output: PathBuf,
+    /// Most vowel entries in the table (similar ones are merged).
+    #[arg(long, default_value_t = 12)]
+    vowels: usize,
+    /// Lowest pitch of the voice (Hz).
+    #[arg(long, default_value_t = 50.0)]
+    fmin: f64,
+    /// Highest pitch of the voice (Hz).
+    #[arg(long, default_value_t = 800.0)]
+    fmax: f64,
+    /// Highest formant to look for (Hz). Default: chosen from the voice's pitch.
+    #[arg(long)]
+    max_formant: Option<f64>,
 }
 
 #[derive(Args)]
@@ -56,7 +84,7 @@ struct ExtractArgs {
 
 #[derive(Args)]
 struct BuildArgs {
-    /// WAV clips of one source (any channel count, PCM or float).
+    /// WAV files and/or directories of them, all of one source.
     #[arg(required = true)]
     clips: Vec<PathBuf>,
     /// The wavetable to write: `.wt` for Surge XT's own format, otherwise a WAV with the
@@ -171,21 +199,13 @@ impl ExtractArgs {
     }
 }
 
-fn name(p: &Path) -> String {
-    p.file_name().map_or_else(
-        || p.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    )
-}
-
-fn analyze(clips: &[PathBuf], s: &ExtractSettings) -> Result<Vec<(String, ClipAnalysis)>, String> {
+fn analyze(paths: &[PathBuf], s: &ExtractSettings) -> Result<Vec<(String, ClipAnalysis)>, String> {
     let mut out = Vec::new();
-    for (i, path) in clips.iter().enumerate() {
-        let audio = wav::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    for (i, (name, audio)) in voice::load(paths)?.into_iter().enumerate() {
         let a = cycles::extract(&audio, i, s);
         eprintln!(
             "{}: {:.2} s at {} Hz, pitch {}, voiced {:.0}%, {} rising crossings, {} candidate cycles, {} kept",
-            name(path),
+            name,
             a.duration,
             a.sample_rate,
             a.median_f0.map_or("none".into(), |f| format!("{f:.2} Hz")),
@@ -194,7 +214,7 @@ fn analyze(clips: &[PathBuf], s: &ExtractSettings) -> Result<Vec<(String, ClipAn
             a.candidates,
             a.cycles.len()
         );
-        out.push((name(path), a));
+        out.push((name, a));
     }
     Ok(out)
 }
@@ -305,9 +325,25 @@ fn build(b: &BuildArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn make_voice(v: &VoiceArgs) -> Result<(), String> {
+    let s = SpeakerSettings {
+        vowels: v.vowels,
+        fmin: v.fmin,
+        fmax: v.fmax,
+        max_formant: v.max_formant,
+        ..Default::default()
+    };
+    let p = voice::analyze(&v.inputs, &s)?;
+    print!("{}", voice::summary(&p));
+    std::fs::write(&v.output, p.to_json()).map_err(|e| format!("{}: {e}", v.output.display()))?;
+    eprintln!("wrote {}", v.output.display());
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match &cli.command {
+        Command::Voice(v) => make_voice(v),
         Command::Build(b) => build(b),
         Command::Analyze { clips, extract } => analyze(clips, &extract.settings(2048)).map(|_| ()),
     };

@@ -67,6 +67,7 @@ pub struct ClipAnalysis {
     pub crossings: usize,
     pub candidates: usize,
     pub cycles: Vec<Cycle>,
+    pub pitch: PitchTrack,
 }
 
 struct Candidate {
@@ -169,6 +170,7 @@ pub fn extract(audio: &Audio, clip: usize, s: &ExtractSettings) -> ClipAnalysis 
         crossings: crossings.len(),
         candidates,
         cycles,
+        pitch: track,
     }
 }
 
