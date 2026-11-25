@@ -16,3 +16,5 @@ clap.workspace = true
 cpal.workspace = true
 midir.workspace = true
 rtrb.workspace = true
+eframe.workspace = true
+rfd.workspace = true

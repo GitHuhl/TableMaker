@@ -17,6 +17,9 @@
       # What the app (winit + wgpu) loads at runtime.
       guiLibs = pkgs: with pkgs; [ libxkbcommon vulkan-loader wayland libx11 libxcursor libxrandr libxi ];
 
+      # A UI font with the IPA symbols vowels are named with.
+      uiFont = pkgs: "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans.ttf";
+
       tablemaker = pkgs: pkgs.rustPlatform.buildRustPackage {
         pname = "tablemaker";
         inherit version;
@@ -32,7 +35,8 @@
         buildInputs = [ pkgs.alsa-lib ];
         postInstall = ''
           wrapProgram $out/bin/tablemaker \
-            --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (guiLibs pkgs)}
+            --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (guiLibs pkgs)} \
+            --set-default TABLEMAKER_UI_FONT ${uiFont pkgs}
         '';
         meta.description = "Turn recordings of a voice into a playable instrument";
         meta.mainProgram = "tablemaker";
@@ -48,6 +52,7 @@
           # xvfb-run + mesa: headless screenshots of the app.
           packages = with pkgs; [ xvfb-run mesa ] ++ guiLibs pkgs;
           shellHook = ''
+            export TABLEMAKER_UI_FONT=${uiFont pkgs}
             # The app (cargo run -p tablemaker-app) dlopens these.
             export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath (guiLibs pkgs)}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
             # Software Vulkan (Mesa lavapipe) for headless runs.

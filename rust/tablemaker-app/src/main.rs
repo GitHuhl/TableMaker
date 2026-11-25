@@ -1,5 +1,6 @@
 //! `tablemaker`: turn recordings of a voice into an instrument.
 
+mod gui;
 mod live;
 mod perform;
 mod voice;
@@ -17,12 +18,21 @@ use tablemaker_synth::Params;
 #[derive(Parser)]
 #[command(name = "tablemaker", version, about = "Turn recordings of a voice into an instrument", long_about = None)]
 struct Cli {
+    /// Without a command, the app opens.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the app (also what plain `tablemaker` does), optionally with
+    /// recordings or a voice file.
+    Gui {
+        /// A voice file, or WAV files and/or directories.
+        inputs: Vec<PathBuf>,
+        #[arg(short, long, value_enum, default_value_t = SpeakerArg::Auto)]
+        speaker: SpeakerArg,
+    },
     /// Analyse a speaker (files and/or directories) and write their voice file:
     /// pitch, voice quality and the vowel table the instrument plays.
     Voice(VoiceArgs),
@@ -467,11 +477,15 @@ fn make_voice(v: &VoiceArgs) -> Result<(), String> {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match &cli.command {
-        Command::Voice(v) => make_voice(v),
-        Command::Play(a) => play(a),
-        Command::Audition(a) => audition(a),
-        Command::Build(b) => build(b),
-        Command::Analyze { clips, extract } => analyze(clips, &extract.settings(2048)).map(|_| ()),
+        None => gui::run(Vec::new(), VoiceType::Auto),
+        Some(Command::Gui { inputs, speaker }) => gui::run(inputs.clone(), speaker.voice()),
+        Some(Command::Voice(v)) => make_voice(v),
+        Some(Command::Play(a)) => play(a),
+        Some(Command::Audition(a)) => audition(a),
+        Some(Command::Build(b)) => build(b),
+        Some(Command::Analyze { clips, extract }) => {
+            analyze(clips, &extract.settings(2048)).map(|_| ())
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
