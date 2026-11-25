@@ -2739,6 +2739,7 @@ dependencies = [
  "rtrb",
  "tablemaker-dsp",
  "tablemaker-synth",
+ "winit",
 ]
 
 [[package]]

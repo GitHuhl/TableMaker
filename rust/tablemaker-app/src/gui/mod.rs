@@ -56,6 +56,14 @@ pub fn run(inputs: Vec<PathBuf>, speaker: VoiceType) -> Result<(), String> {
             .with_app_id("tablemaker")
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([760.0, 520.0]),
+        event_loop_builder: Some(Box::new(|builder| {
+            #[cfg(target_os = "linux")]
+            if prefer_x11() {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                builder.with_x11();
+            }
+            let _ = builder;
+        })),
         ..Default::default()
     };
     eframe::run_native(
@@ -71,6 +79,48 @@ pub fn run(inputs: Vec<PathBuf>, speaker: VoiceType) -> Result<(), String> {
         }),
     )
     .map_err(|e| e.to_string())
+}
+
+/// winit's Wayland backend cannot receive dropped files, so on a Wayland
+/// desktop that also runs XWayland the window opens through XWayland, where
+/// dropping files from a file manager works. TABLEMAKER_WAYLAND=1 keeps it
+/// native (dropping then does not work; pasting copied files still does).
+#[cfg(target_os = "linux")]
+fn prefer_x11() -> bool {
+    let set = |v: &str| std::env::var_os(v).is_some_and(|x| !x.is_empty());
+    set("WAYLAND_DISPLAY") && set("DISPLAY") && !set("TABLEMAKER_WAYLAND")
+}
+
+/// Files from pasted text: copied files arrive as file:// URLs or paths, one per line.
+fn pasted_paths(text: &str) -> Vec<PathBuf> {
+    text.lines()
+        .map(str::trim)
+        .filter_map(|l| {
+            let path = match l.strip_prefix("file://") {
+                Some(rest) => PathBuf::from(percent_decode(rest)),
+                None => PathBuf::from(l),
+            };
+            (path.is_absolute() && path.exists()).then_some(path)
+        })
+        .collect()
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 impl App {
@@ -660,7 +710,7 @@ impl App {
         painter.text(
             c + egui::vec2(0.0, 8.0),
             egui::Align2::CENTER_CENTER,
-            "WAV files or whole folders, all of one speaker. Speech or singing.",
+            "WAV files or whole folders, all of one speaker. Speech or singing. (Or copy them and paste here.)",
             egui::FontId::proportional(15.0),
             theme::DIM,
         );
@@ -712,13 +762,23 @@ impl eframe::App for App {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
-        let dropped: Vec<PathBuf> = ctx.input(|i| {
+        let mut dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
                 .iter()
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
+        // Files copied in a file manager and pasted here (works on any backend).
+        if !ctx.egui_wants_keyboard_input() {
+            ctx.input(|i| {
+                for e in &i.events {
+                    if let egui::Event::Paste(text) = e {
+                        dropped.extend(pasted_paths(text));
+                    }
+                }
+            });
+        }
         if !dropped.is_empty() {
             self.open(dropped, &ctx);
         }
@@ -880,4 +940,21 @@ fn export_wavetable(p: &SpeakerProfile, path: &std::path::Path) -> Result<(), St
         })
         .collect();
     wav::write_wavetable(path, &frames, 48000, wav::Encoding::Float32).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_pasted_file_urls_and_paths() {
+        let dir = std::env::temp_dir().join(format!("tablemaker paste {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a b.wav");
+        std::fs::write(&file, b"x").unwrap();
+        let url = format!("file://{}", file.display().to_string().replace(' ', "%20"));
+        let text = format!("{url}\r\n{}\nnot a path\n/nonexistent/x.wav", dir.display());
+        assert_eq!(pasted_paths(&text), vec![file.clone(), dir.clone()]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

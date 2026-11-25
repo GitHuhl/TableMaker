@@ -21,7 +21,8 @@ nix run github:GitHuhl/TableMaker
 ## Playing it
 
 * **Drop recordings in** (WAV files or folders, searched all the way
-  down). Pick *Man*, *Woman* or *Child* if you know who it is; it tunes the
+  down), or copy them in your file manager and paste them into the
+  window. Pick *Man*, *Woman* or *Child* if you know who it is; it tunes the
   pitch search, how high formants are looked for and how vowels are named.
   *Auto* works it out.
 * **The vowel pad** lays out every vowel found the way they sit in the
@@ -39,6 +40,11 @@ nix run github:GitHuhl/TableMaker
   *Reset to the speaker* brings them back.
 * **Save** the voice (to reopen without analysing again), a demo phrase as
   WAV, or the vowels as a wavetable WAV for other synths.
+
+On a Wayland desktop the window opens through XWayland, because the
+windowing library's native Wayland backend cannot receive dropped files
+yet. Set `TABLEMAKER_WAYLAND=1` to keep it native Wayland; pasting copied
+files still works there.
 
 ## From the command line
 
