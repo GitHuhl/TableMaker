@@ -13,7 +13,7 @@ use tablemaker_dsp::pitch::PitchSettings;
 use tablemaker_dsp::speaker::{SpeakerProfile, SpeakerSettings, VoiceType};
 use tablemaker_dsp::table::{self, Morph, Normalize, Order, Select, TableSettings};
 use tablemaker_dsp::{preview, report, wav};
-use tablemaker_synth::Params;
+use tablemaker_synth::{BankOptions, Params, PulseShape};
 
 #[derive(Parser)]
 #[command(name = "tablemaker", version, about = "Turn recordings of a voice into an instrument", long_about = None)]
@@ -93,6 +93,19 @@ struct PerformArgs {
     /// Breath noise, 1 = the speaker's own amount.
     #[arg(long)]
     breath: Option<f32>,
+    /// Play the recordings as they are: no inferred formants, nothing above their band.
+    #[arg(long)]
+    no_restore: bool,
+    /// What sounds: 0 = the recorded timbre, 1 = a glottal pulse through the vowels'
+    /// formant filters, in between a blend.
+    #[arg(long, default_value_t = 0.0)]
+    source: f32,
+    /// Glottal pulse open quotient, 0.3-0.95 (default: fitted to the speaker).
+    #[arg(long)]
+    pulse_open: Option<f64>,
+    /// Glottal pulse skew, opening time over open time, 0.5-0.9.
+    #[arg(long, default_value_t = 0.7)]
+    pulse_skew: f64,
 }
 
 impl PerformArgs {
@@ -106,7 +119,18 @@ impl PerformArgs {
         if let Some(b) = self.breath {
             s.breath = b;
         }
+        s.source = self.source.clamp(0.0, 1.0);
         s
+    }
+
+    fn bank(&self) -> BankOptions {
+        BankOptions {
+            restore: !self.no_restore,
+            pulse: self.pulse_open.map(|open| PulseShape {
+                open,
+                skew: self.pulse_skew,
+            }),
+        }
     }
 }
 
@@ -141,6 +165,10 @@ struct AuditionArgs {
     /// The WAV file to write.
     #[arg(short, long, default_value = "audition.wav")]
     output: PathBuf,
+    /// Render the phrase twice: the recorded timbre, then the glottal pulse through
+    /// the same formant filters.
+    #[arg(long)]
+    compare: bool,
     #[command(flatten)]
     perform: PerformArgs,
 }
@@ -450,12 +478,18 @@ fn play(a: &PlayArgs) -> Result<(), String> {
         device: a.device.clone(),
         midi: a.midi.clone(),
     };
-    perform::play(&p, a.perform.params(&p), &o)
+    perform::play(&p, a.perform.params(&p), a.perform.bank(), &o)
 }
 
 fn audition(a: &AuditionArgs) -> Result<(), String> {
     let p = perform::profile_from(&a.inputs, a.speaker.voice())?;
-    perform::audition(&p, &a.output, a.perform.params(&p))
+    perform::audition(
+        &p,
+        &a.output,
+        a.perform.params(&p),
+        a.perform.bank(),
+        a.compare,
+    )
 }
 
 fn make_voice(v: &VoiceArgs) -> Result<(), String> {

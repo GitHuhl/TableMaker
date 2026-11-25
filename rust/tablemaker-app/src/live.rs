@@ -6,7 +6,7 @@ use cpal::{FromSample, SizedSample};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tablemaker_dsp::speaker::SpeakerProfile;
-use tablemaker_synth::{Bank, Engine, Event, Params};
+use tablemaker_synth::{Bank, BankOptions, Engine, Event, Params};
 
 /// What the audio thread reports back.
 #[derive(Default)]
@@ -89,6 +89,7 @@ impl Live {
     pub fn start(
         profile: &SpeakerProfile,
         params: Option<Params>,
+        bank: BankOptions,
         o: &LiveOptions,
     ) -> Result<Live, String> {
         let host = cpal::default_host();
@@ -107,7 +108,7 @@ impl Live {
             .map_err(|e| format!("{device}: {e}"))?;
         let config = supported.config();
         let sample_rate = config.sample_rate;
-        let mut engine = Engine::for_profile(profile, sample_rate as f64);
+        let mut engine = Engine::with_options(profile, sample_rate as f64, bank);
         if let Some(p) = params {
             engine.handle(Event::Params(p));
         }
@@ -135,11 +136,15 @@ impl Live {
         })
     }
 
-    /// Switch to another voice (its bank is built here, off the audio thread).
-    pub fn load(&self, profile: &SpeakerProfile, params: Params) {
-        let bank = Arc::new(Bank::new(profile, self.sample_rate as f64));
-        self.sender.send(Event::Bank(bank));
-        self.sender.send(Event::Params(params));
+    /// Switch to another voice, or rebuild this one's bank with other
+    /// options. The bank is built on a background thread, never the audio thread.
+    pub fn load(&self, profile: Arc<SpeakerProfile>, params: Params, options: BankOptions) {
+        let (sender, rate) = (self.sender.clone(), self.sample_rate as f64);
+        std::thread::spawn(move || {
+            let bank = Arc::new(Bank::with_options(&profile, rate, options));
+            sender.send(Event::Bank(bank));
+            sender.send(Event::Params(params));
+        });
     }
 }
 

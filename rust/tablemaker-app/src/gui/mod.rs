@@ -12,9 +12,10 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tablemaker_dsp::completion::FormantKind;
 use tablemaker_dsp::speaker::{self, SpeakerProfile, SpeakerSettings, VoiceType};
 use tablemaker_dsp::wav;
-use tablemaker_synth::{Bank, Event, Params};
+use tablemaker_synth::{Bank, BankOptions, Event, Params, PulseShape};
 
 struct Job {
     progress: Arc<Mutex<(f64, String)>>,
@@ -38,6 +39,11 @@ pub struct App {
     mouse_note: Option<u8>,
     pad_note: Option<u8>,
     screenshot: Option<(PathBuf, u32)>,
+    /// Play restored envelopes (inferred formants, band above the recording).
+    restore: bool,
+    /// The glottal pulse of the pulse source, and whether it follows the speaker.
+    pulse: PulseShape,
+    pulse_auto: bool,
 }
 
 enum DialogResult {
@@ -45,6 +51,7 @@ enum DialogResult {
     Voice(PathBuf),
     SaveVoice(PathBuf),
     Audition(PathBuf),
+    Compare(PathBuf),
     Wavetable(PathBuf),
 }
 
@@ -142,6 +149,9 @@ impl App {
             mouse_note: None,
             pad_note: None,
             screenshot,
+            restore: true,
+            pulse: PulseShape::default(),
+            pulse_auto: true,
         }
     }
 
@@ -211,14 +221,37 @@ impl App {
         });
     }
 
+    fn bank_options(&self) -> BankOptions {
+        BankOptions {
+            restore: self.restore,
+            pulse: Some(self.pulse),
+        }
+    }
+
+    /// Rebuild the playing bank (in the background) after a bank option changed.
+    fn rebuild(&self) {
+        if let (Some(l), Some(p)) = (&self.live, &self.profile) {
+            l.load(p.clone(), self.params, self.bank_options());
+        }
+    }
+
     fn set_profile(&mut self, p: SpeakerProfile) {
         let note = 69.0 + 12.0 * (p.pitch.median / 440.0).log2();
         self.computer_base = ((note.round() as i32 / 12) * 12).clamp(24, 84) as u8;
         self.params = Params::from_profile(&p);
         self.selected = None;
+        if self.pulse_auto {
+            self.pulse = PulseShape::fit(&p, 48000.0);
+        }
+        let p = Arc::new(p);
         match &self.live {
-            Some(l) => l.load(&p, self.params),
-            None => match Live::start(&p, Some(self.params), &LiveOptions::default()) {
+            Some(l) => l.load(p.clone(), self.params, self.bank_options()),
+            None => match Live::start(
+                &p,
+                Some(self.params),
+                self.bank_options(),
+                &LiveOptions::default(),
+            ) {
                 Ok(l) => {
                     self.audio_error = None;
                     self.live = Some(l);
@@ -232,7 +265,7 @@ impl App {
             vowels.len(),
             vowels.join(" ")
         ));
-        self.profile = Some(Arc::new(p));
+        self.profile = Some(p);
     }
 
     fn dialog(
@@ -272,7 +305,13 @@ impl App {
                 None => Ok(None),
             },
             DialogResult::Audition(path) => match profile {
-                Some(p) => perform::audition(&p, &path, self.params).map(|_| Some(path)),
+                Some(p) => perform::audition(&p, &path, self.params, self.bank_options(), false)
+                    .map(|_| Some(path)),
+                None => Ok(None),
+            },
+            DialogResult::Compare(path) => match profile {
+                Some(p) => perform::audition(&p, &path, self.params, self.bank_options(), true)
+                    .map(|_| Some(path)),
                 None => Ok(None),
             },
             DialogResult::Wavetable(path) => match profile {
@@ -433,6 +472,20 @@ impl App {
                             &ctx,
                         );
                     }
+                    if ui
+                        .button("Comparison: recorded, then pulse (WAV)…")
+                        .clicked()
+                    {
+                        self.dialog(
+                            || {
+                                rfd::FileDialog::new()
+                                    .set_file_name("compare.wav")
+                                    .save_file()
+                                    .map(DialogResult::Compare)
+                            },
+                            &ctx,
+                        );
+                    }
                     if ui.button("Vowels as a wavetable (WAV)…").clicked() {
                         self.dialog(
                             || {
@@ -509,20 +562,32 @@ impl App {
             .map(|p| Params::from_profile(p))
             .unwrap_or_default();
         /// One control: a small caption with its value over a slider.
-        fn knob(ui: &mut egui::Ui, name: &str, value: String, slider: egui::Slider) -> bool {
-            let mut changed = false;
+        fn knob_wide(
+            ui: &mut egui::Ui,
+            width: f32,
+            name: &str,
+            value: String,
+            slider: egui::Slider,
+        ) -> egui::Response {
             ui.vertical(|ui| {
-                ui.set_width(104.0);
+                ui.set_width(width);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(name).color(theme::DIM).size(12.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(RichText::new(value).color(theme::TEXT).size(12.0));
                     });
                 });
-                ui.spacing_mut().slider_width = 104.0;
-                changed = ui.add(slider.show_value(false)).changed();
-            });
-            changed
+                ui.spacing_mut().slider_width = width;
+                ui.add(slider.show_value(false))
+            })
+            .inner
+        }
+        fn knob(ui: &mut egui::Ui, name: &str, value: String, slider: egui::Slider) -> bool {
+            knob_wide(ui, 104.0, name, value, slider).changed()
+        }
+        /// A slider whose change rebuilds the bank: act when it is let go.
+        fn settled(r: &egui::Response) -> bool {
+            r.drag_stopped() || (r.changed() && !r.dragged())
         }
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 14.0;
@@ -595,6 +660,62 @@ impl App {
                 }
             });
         });
+        ui.add_space(4.0);
+        let mut rebuild = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let src = self.params.source;
+            let what = if src <= 0.0 {
+                "recorded".to_string()
+            } else if src >= 1.0 {
+                "glottal pulse".to_string()
+            } else {
+                format!("{:.0}% pulse", src * 100.0)
+            };
+            knob_wide(ui, 230.0, "Source: recorded ↔ pulse", what, egui::Slider::new(&mut self.params.source, 0.0..=1.0))
+                .on_hover_text("Left: the recorded timbre. Right: a synthetic glottal pulse through the same vowel's formant filters.");
+            if ui
+                .button("A/B")
+                .on_hover_text("Switch between the recorded timbre and the glottal pulse through the same formants")
+                .clicked()
+            {
+                self.params.source = if self.params.source < 0.5 { 1.0 } else { 0.0 };
+            }
+            let open = self.pulse.open;
+            let r = knob_wide(ui, 104.0, "Pulse open", format!("{:.0}%", open * 100.0), egui::Slider::new(&mut self.pulse.open, 0.3..=0.95))
+                .on_hover_text("Open quotient: higher is softer and breathier, lower is pressed and brighter");
+            if self.pulse.open != open {
+                self.pulse_auto = false;
+            }
+            rebuild |= settled(&r);
+            let skew = self.pulse.skew;
+            let r = knob_wide(ui, 104.0, "Pulse skew", format!("{:.0}%", skew * 100.0), egui::Slider::new(&mut self.pulse.skew, 0.5..=0.9))
+                .on_hover_text("Opening time over open time: higher closes more abruptly, brighter");
+            if self.pulse.skew != skew {
+                self.pulse_auto = false;
+            }
+            rebuild |= settled(&r);
+            ui.vertical(|ui| {
+                if ui
+                    .checkbox(&mut self.pulse_auto, "Pulse fitted to the speaker")
+                    .on_hover_text("Choose the pulse whose spectral tilt through the formants matches the speaker's H1-H2")
+                    .changed()
+                    && self.pulse_auto
+                {
+                    if let Some(p) = &self.profile {
+                        self.pulse = PulseShape::fit(p, 48000.0);
+                        rebuild = true;
+                    }
+                }
+                rebuild |= ui
+                    .checkbox(&mut self.restore, "Restore missing formants & highs")
+                    .on_hover_text("Add resonances for inferred formants, and continue the spectrum above a low-rate recording's band")
+                    .changed();
+            });
+        });
+        if rebuild {
+            self.rebuild();
+        }
         if self.params != before {
             self.send(Event::Params(self.params));
         }
@@ -639,6 +760,15 @@ impl App {
             "Recordings",
             format!("{} · {secs:.1} s", p.recordings.len()),
         );
+        let band = p
+            .recordings
+            .iter()
+            .map(|r| r.band)
+            .filter(|b| *b > 0.0)
+            .fold(f64::INFINITY, f64::min);
+        if band < 18000.0 {
+            row(ui, "Recorded up to", format!("{:.1} kHz", band / 1000.0));
+        }
         row(ui, "Breathiness", format!("HNR {:.0} dB", p.hnr));
         row(ui, "Pitch wander", format!("{:.2}%", p.jitter));
         row(ui, "Level wander", format!("{:.1}%", p.shimmer));
@@ -673,10 +803,22 @@ impl App {
             );
         });
         for (k, f) in v.formants.iter().enumerate() {
+            let how = match v.formant_kinds.get(k) {
+                Some(FormantKind::Found) => "  found",
+                Some(FormantKind::Inferred) => "  inferred",
+                _ => "",
+            };
             row(
                 ui,
                 &format!("F{}", k + 1),
-                format!("{:.0} Hz  (±{:.0})", f.freq, f.bw / 2.0),
+                format!("{:.0} Hz  (±{:.0}){how}", f.freq, f.bw / 2.0),
+            );
+        }
+        if v.formant_kinds.iter().any(|k| *k != FormantKind::Measured) {
+            ui.label(
+                RichText::new("found: located in this vowel's spectrum where the speaker's other vowels put it. inferred: not in the recording; restored when that is on.")
+                    .color(theme::DIM)
+                    .size(11.0),
             );
         }
         row(ui, "Breathiness", format!("HNR {:.0} dB", v.hnr));

@@ -197,3 +197,84 @@ fn reads_midi() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn the_pulse_source_has_the_same_formants() {
+    // The glottal pulse through the vowel's formant filters lands on the same formants
+    // as the recorded timbre.
+    let p = profile(&[("ah", &AH)]);
+    let rec = (p.vowels[0].formants[0].freq, p.vowels[0].formants[1].freq);
+    let mut e = Engine::for_profile(&p, SR);
+    let mut params = e.params();
+    params.source = 1.0;
+    e.handle(Event::Params(params));
+    for note in [45u8, 57] {
+        let (f1, f2) = median_formants(&sing(&mut e, note, vec![]));
+        assert!(
+            (f1 / rec.0 - 1.0).abs() < 0.12,
+            "note {note}: pulse F1 {f1} vs {}",
+            rec.0
+        );
+        assert!(
+            (f2 / rec.1 - 1.0).abs() < 0.12,
+            "note {note}: pulse F2 {f2} vs {}",
+            rec.1
+        );
+    }
+}
+
+#[test]
+fn restore_fills_the_band_above_a_low_rate_recording() {
+    use tablemaker_synth::bank::{Bank, BankOptions};
+    // An "ah" recorded at 16 kHz holds nothing above 8 kHz. (With the higher resonances a
+    // real voice has, so its spectrum does not simply stop above F4.)
+    let mut formants = AH.to_vec();
+    formants.extend([
+        (4500.0, 300.0),
+        (5500.0, 400.0),
+        (6500.0, 500.0),
+        (7500.0, 600.0),
+    ]);
+    let v = Voice {
+        f0: 120.0,
+        formants,
+        jitter: 0.003,
+        ..Default::default()
+    };
+    let clips = vec![(
+        "ah".to_string(),
+        Audio {
+            sample_rate: 16000,
+            samples: v.render(16000, 1.5),
+        },
+    )];
+    let p = speaker::analyze(&clips, &SpeakerSettings::default(), &|_, _| {}).unwrap();
+    let high = |restore: bool| {
+        let bank = Bank::with_options(
+            &p,
+            48000.0,
+            BankOptions {
+                restore,
+                pulse: None,
+            },
+        );
+        let (z, _) = Bank::zone(120.0);
+        let spec = tablemaker_dsp::signal::Fft::new().spectrum(
+            &bank.vowels[0]
+                .table(z)
+                .iter()
+                .map(|&x| x as f64)
+                .collect::<Vec<_>>(),
+        );
+        // Harmonics 75..95 of 120 Hz: 9 to 11.4 kHz.
+        (75..95).map(|k| spec[k].norm_sqr()).sum::<f64>()
+            / (1..20).map(|k| spec[k].norm_sqr()).sum::<f64>()
+    };
+    let (with, without) = (high(true), high(false));
+    assert!(
+        with > 1000.0 * without,
+        "restored {with:e} vs not {without:e}"
+    );
+    assert!(with > 1e-6, "restored band too quiet: {with:e}");
+    assert!(with < 1e-1, "restored band too loud: {with}");
+}

@@ -38,8 +38,21 @@ nix run github:GitHuhl/TableMaker
 * **Controls** start at the speaker's own measurements: vibrato depth and
   rate, breath, pitch and level wander, attack, release, glide and legato.
   *Reset to the speaker* brings them back.
-* **Save** the voice (to reopen without analysing again), a demo phrase as
-  WAV, or the vowels as a wavetable WAV for other synths.
+* **Compare with a glottal pulse.** The *Source* slider (and *A/B*)
+  crossfades from the recorded timbre to a synthetic glottal pulse put
+  through the same vowel's formant filters (F1-F4, then the vocal tract's
+  higher resonances). The pulse's open quotient and skew can be set by
+  hand or fitted to the speaker's spectral tilt.
+* **Missing formants are completed.** Where a vowel's F2-F4 could not be
+  measured, TableMaker predicts them from the speaker's other vowels, looks
+  for them in that vowel's spectrum (*found*) and otherwise keeps the
+  prediction (*inferred*). With *Restore missing formants & highs* on, the
+  instrument adds a resonance for every inferred formant and, for
+  recordings at a low sample rate, continues the speaker's spectrum above
+  the recording's band instead of leaving it silent.
+* **Save** the voice (to reopen without analysing again), a demo phrase or
+  a recorded-then-pulse comparison as WAV, or the vowels as a wavetable WAV
+  for other synths.
 
 On a Wayland desktop the window opens through XWayland, because the
 windowing library's native Wayland backend cannot receive dropped files
@@ -55,6 +68,7 @@ tablemaker voice recordings/ -o alice.json          # analyse and print the voic
 tablemaker play alice.json                          # play from MIDI, no window
 tablemaker play --list                              # audio outputs and MIDI inputs
 tablemaker audition alice.json -o demo.wav          # render a demo phrase
+tablemaker audition alice.json --compare -o ab.wav  # recorded, then glottal pulse + formants
 tablemaker build clips/ -o table.wav                # a classic wavetable of the cycles
 ```
 
@@ -63,15 +77,17 @@ tablemaker build clips/ -o table.wav                # a classic wavetable of the
 ```
 Speaker (man)   4 recordings, 8.0 s, 100% voiced
 Pitch     124 Hz median, range 109-136 Hz
-Voice     jitter 1.19%, shimmer 4.4%, HNR 16.3 dB, H1-H2 -0.2 dB, level -17 dBFS
-Vibrato   5.2 Hz, ±30 cents, in 100% of sustained notes
+Voice     jitter 0.97%, shimmer 3.6%, HNR 17.5 dB, H1-H2 -1.2 dB, level -16 dBFS
+Vibrato   5.1 Hz, ±28 cents, in 100% of sustained notes
 
 Vowel table (4 entries, in morph order)
-   #  vowel    F1    F2    F3    F4  share  pitch   HNR  heard in
-   1  i       311  2241  2887  3433  23.6%  118Hz   15  sub/ee.wav at 0.56 s
-   2  ɛ       553  1821  2485  3357  29.6%  134Hz   17  sub/eh.wav at 0.85 s
-   3  ɑ       748  1356  2429  3275  22.5%  110Hz   17  ah.wav at 0.75 s
-   4  u       328   858  2253  3191  24.3%  126Hz   15  oo.wav at 1.19 s
+   #  vowel     F1     F2     F3     F4  share  pitch   HNR  heard in
+   1  i        320   2255   2955   3613  24.4%  118Hz   16  sub/ee.wav at 0.99 s
+   2  ɛ        570   1796   2512   3521  28.4%  134Hz   17  sub/eh.wav at 0.23 s
+   3  ɑ        767   1323   2447   3421  21.5%  110Hz   20  ah.wav at 0.55 s
+   4  u       338    876 + 2314 ~ 3521  25.8%  126Hz   18  oo.wav at 1.69 s
+  + found in the vowel's spectrum where the speaker's other vowels put it
+  ~ inferred: not in the recording (restored in the instrument unless --no-restore)
 ```
 
 ## How it works
@@ -89,7 +105,11 @@ Vowel table (4 entries, in morph order)
    envelope into the vowels and other voiced sounds the speaker made; each
    entry keeps its averaged envelope, formants, breathiness and where it
    was heard, and the entries are ordered so neighbours sound alike.
-4. **The instrument.** Each vowel's envelope becomes a minimum-phase
+4. **Completion.** Missing higher formants are predicted from the
+   speaker's other vowels (F3 and F4 follow the vocal tract's length,
+   which every vowel shares), searched for in the vowel's own spectrum
+   with its slope taken out, and otherwise inferred.
+5. **The instrument.** Each vowel's envelope becomes a minimum-phase
    response, rendered as a band-limited single cycle for every semitone
    with harmonic amplitudes read from the envelope at that pitch, plus a
    breath-noise loop with the same envelope. Voices crossfade between

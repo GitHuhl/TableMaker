@@ -34,6 +34,9 @@ pub struct Params {
     /// Keys from this note upwards choose vowels instead of sounding.
     pub vowel_keys: Option<u8>,
     pub gain: f32,
+    /// What sounds: 0 = the recorded timbre, 1 = a glottal pulse through the
+    /// vowel's formant filters; in between, a blend.
+    pub source: f32,
 }
 
 impl Default for Params {
@@ -55,6 +58,7 @@ impl Default for Params {
             vowel_glide: 0.08,
             vowel_keys: None,
             gain: 0.5,
+            source: 0.0,
         }
     }
 }
@@ -219,6 +223,18 @@ impl Engine {
     /// An engine for a speaker at a sample rate, set up from their profile.
     pub fn for_profile(p: &SpeakerProfile, sample_rate: f64) -> Self {
         Self::new(Arc::new(Bank::new(p, sample_rate)), Params::from_profile(p))
+    }
+
+    /// The same with chosen bank options (restoration, pulse shape).
+    pub fn with_options(
+        p: &SpeakerProfile,
+        sample_rate: f64,
+        options: crate::bank::BankOptions,
+    ) -> Self {
+        Self::new(
+            Arc::new(Bank::with_options(p, sample_rate, options)),
+            Params::from_profile(p),
+        )
     }
 
     pub fn params(&self) -> Params {
@@ -470,6 +486,13 @@ impl Engine {
                 let f = v.freq * bend * 2f64.powf(vib as f64 / 1200.0) * (1.0 + v.jitter as f64);
                 let (z, zf) = Bank::zone(f);
                 let (a0, a1, b0, b1) = (v0.table(z), v0.table(z + 1), v1.table(z), v1.table(z + 1));
+                let (p0, p1, q0, q1) = (
+                    v0.pulse_table(z),
+                    v0.pulse_table(z + 1),
+                    v1.pulse_table(z),
+                    v1.pulse_table(z + 1),
+                );
+                let mix = p.source.clamp(0.0, 1.0);
                 let step = f / sr as f64;
                 let amp = v.velocity * (1.0 + v.shimmer);
                 let n = chunk.len() as f32;
@@ -480,9 +503,20 @@ impl Engine {
                     let i2 = (i + 1) & (TABLE - 1);
                     let t = (x - x.floor()) as f32;
                     let rd = |tb: &[f32]| tb[i] + (tb[i2] - tb[i]) * t;
-                    let a = rd(a0) + (rd(a1) - rd(a0)) * zf;
-                    let b = rd(b0) + (rd(b1) - rd(b0)) * zf;
-                    let voiced = a + (b - a) * ef;
+                    let play = |t0: &[f32], t1: &[f32], u0: &[f32], u1: &[f32]| {
+                        let a = rd(t0) + (rd(t1) - rd(t0)) * zf;
+                        let b = rd(u0) + (rd(u1) - rd(u0)) * zf;
+                        a + (b - a) * ef
+                    };
+                    // Only the sources that are heard are read.
+                    let voiced = if mix <= 0.0 {
+                        play(a0, a1, b0, b1)
+                    } else if mix >= 1.0 {
+                        play(p0, p1, q0, q1)
+                    } else {
+                        let r = play(a0, a1, b0, b1);
+                        r + (play(p0, p1, q0, q1) - r) * mix
+                    };
                     let np = v.noise_pos & (v0.noise.len() - 1);
                     let noise = v0.noise[np] + (v1.noise[np] - v0.noise[np]) * ef;
                     // Breath noise pulses with the glottal cycle, as it does in a real voice.

@@ -2,6 +2,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use tablemaker_dsp::completion::FormantKind;
 use tablemaker_dsp::speaker::{self, SpeakerProfile, SpeakerSettings};
 use tablemaker_dsp::{inputs, wav};
 
@@ -87,12 +88,17 @@ pub fn summary(p: &SpeakerProfile) -> String {
         "\nVowel table ({} entries, in morph order)\n",
         p.vowels.len()
     );
-    o += "   #  vowel    F1    F2    F3    F4  share  pitch   HNR  heard in\n";
+    o += "   #  vowel     F1     F2     F3     F4  share  pitch   HNR  heard in\n";
     for (i, v) in p.vowels.iter().enumerate() {
         let f = |k: usize| {
-            v.formants
-                .get(k)
-                .map_or("    -".to_string(), |f| format!("{:5.0}", f.freq))
+            v.formants.get(k).map_or("     -".to_string(), |f| {
+                let mark = match v.formant_kinds.get(k) {
+                    Some(FormantKind::Found) => "+",
+                    Some(FormantKind::Inferred) => "~",
+                    _ => " ",
+                };
+                format!("{mark}{:5.0}", f.freq)
+            })
         };
         let src = v
             .sources
@@ -109,6 +115,26 @@ pub fn summary(p: &SpeakerProfile) -> String {
             v.share * 100.0,
             v.f0,
             v.hnr
+        );
+    }
+    let kinds = || p.vowels.iter().flat_map(|v| &v.formant_kinds);
+    if kinds().any(|k| *k == FormantKind::Found) {
+        o += "  + found in the vowel's spectrum where the speaker's other vowels put it\n";
+    }
+    if kinds().any(|k| *k == FormantKind::Inferred) {
+        o +=
+            "  ~ inferred: not in the recording (restored in the instrument unless --no-restore)\n";
+    }
+    let low: Vec<String> = p
+        .recordings
+        .iter()
+        .filter(|r| r.band > 0.0 && r.band < 18000.0)
+        .map(|r| format!("{} ({:.1} kHz)", r.file, r.band / 1000.0))
+        .collect();
+    if !low.is_empty() {
+        o += &format!(
+            "\nBelow full band, restored above it in the instrument: {}\n",
+            low.join(", ")
         );
     }
     o

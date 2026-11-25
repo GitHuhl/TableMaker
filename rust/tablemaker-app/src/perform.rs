@@ -5,7 +5,7 @@ use crate::voice;
 use std::path::{Path, PathBuf};
 use tablemaker_dsp::speaker::{SpeakerProfile, SpeakerSettings, VoiceType};
 use tablemaker_dsp::wav;
-use tablemaker_synth::{Engine, Event, Params};
+use tablemaker_synth::{BankOptions, Engine, Event, Params};
 
 /// A voice file, or recordings to analyse now.
 pub fn profile_from(inputs: &[PathBuf], speaker: VoiceType) -> Result<SpeakerProfile, String> {
@@ -77,22 +77,58 @@ pub fn demo_score(p: &SpeakerProfile, params: Params) -> (Vec<(f64, Event)>, f64
     (score, t + 3.0)
 }
 
-pub fn audition(profile: &SpeakerProfile, out: &Path, params: Params) -> Result<(), String> {
-    let mut engine = Engine::for_profile(profile, 48000.0);
-    let (score, secs) = demo_score(profile, params);
-    let audio: Vec<f64> = engine
-        .render(&score, secs)
-        .iter()
-        .map(|&v| v as f64)
-        .collect();
+/// Render the demo phrase; with `compare`, twice: the recorded timbre, then
+/// the glottal pulse through the same formant filters.
+pub fn audition(
+    profile: &SpeakerProfile,
+    out: &Path,
+    params: Params,
+    bank: BankOptions,
+    compare: bool,
+) -> Result<(), String> {
+    let mut engine = Engine::with_options(profile, 48000.0, bank);
+    let takes: Vec<Params> = if compare {
+        vec![
+            Params {
+                source: 0.0,
+                ..params
+            },
+            Params {
+                source: 1.0,
+                ..params
+            },
+        ]
+    } else {
+        vec![params]
+    };
+    let mut audio: Vec<f64> = Vec::new();
+    for p in &takes {
+        let (score, secs) = demo_score(profile, *p);
+        audio.extend(engine.render(&score, secs).iter().map(|&v| v as f64));
+        audio.extend(std::iter::repeat_n(0.0, 24000));
+    }
     wav::write(out, &audio, 48000, wav::Encoding::Pcm24)
         .map_err(|e| format!("{}: {e}", out.display()))?;
-    eprintln!("wrote {} ({secs:.1} s)", out.display());
+    let what = if compare {
+        ": the recorded timbre, then the glottal pulse through its formants"
+    } else {
+        ""
+    };
+    eprintln!(
+        "wrote {} ({:.1} s){what}",
+        out.display(),
+        audio.len() as f64 / 48000.0
+    );
     Ok(())
 }
 
-pub fn play(profile: &SpeakerProfile, params: Params, o: &LiveOptions) -> Result<(), String> {
-    let live = Live::start(profile, Some(params), o)?;
+pub fn play(
+    profile: &SpeakerProfile,
+    params: Params,
+    bank: BankOptions,
+    o: &LiveOptions,
+) -> Result<(), String> {
+    let live = Live::start(profile, Some(params), bank, o)?;
     eprintln!("playing on {} at {} Hz", live.device, live.sample_rate);
     if live.midi_ports.is_empty() {
         eprintln!(

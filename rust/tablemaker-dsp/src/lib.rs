@@ -8,6 +8,7 @@
 //! table: selected, ordered for smooth morphing, phase-aligned and filled
 //! in between.
 
+pub mod completion;
 pub mod cycles;
 pub mod envelope;
 pub mod formant;

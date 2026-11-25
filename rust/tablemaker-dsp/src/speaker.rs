@@ -3,6 +3,7 @@
 //! and the qualities of their voice (jitter, shimmer, breathiness, spectral
 //! tilt, vibrato). The result is what the synthesizer is built from.
 
+use crate::completion::{self, FormantKind};
 use crate::cycles::{self, ExtractSettings};
 use crate::envelope::Envelope;
 use crate::formant::{self, FormantSettings};
@@ -97,8 +98,12 @@ pub struct Source {
 pub struct VowelEntry {
     /// The nearest reference vowel (IPA), a guess.
     pub label: String,
-    /// F1 upwards (median over the entry's cycles).
+    /// F1 to F4: measured (median over the entry's cycles), or completed
+    /// (see `completion`).
     pub formants: Vec<Formant>,
+    /// How each formant was obtained.
+    #[serde(default)]
+    pub formant_kinds: Vec<FormantKind>,
     /// Median pitch it was produced at (Hz).
     pub f0: f64,
     /// Cycles in this entry, and their share of all cycles.
@@ -140,6 +145,9 @@ pub struct RecordingSummary {
     pub voiced: f64,
     pub cycles: usize,
     pub median_f0: Option<f64>,
+    /// Highest frequency the recording holds (half its sample rate), Hz.
+    #[serde(default)]
+    pub band: f64,
 }
 
 /// A point of the vowel space: one analysed cycle.
@@ -192,6 +200,14 @@ impl SpeakerProfile {
                 p.version,
                 Self::VERSION
             ));
+        }
+        // Files from before formant completion: complete them now.
+        let mut p = p;
+        if p.vowels
+            .iter()
+            .any(|v| v.formant_kinds.len() != v.formants.len())
+        {
+            completion::complete(&mut p.vowels, p.voice);
         }
         Ok(p)
     }
@@ -282,12 +298,16 @@ fn analyze_clip(index: usize, name: &str, audio: &Audio, s: &SpeakerSettings) ->
     let a = cycles::extract(audio, index, &ex);
     let max_formant = s
         .max_formant
-        .unwrap_or_else(|| s.voice.max_formant(a.median_f0.unwrap_or(150.0)));
+        .unwrap_or_else(|| s.voice.max_formant(a.median_f0.unwrap_or(150.0)))
+        // A low-rate recording has nothing above its band: do not look for formants there.
+        .min(audio.sample_rate as f64 / 2.0 * 0.95);
     let ftrack = formant::track(
         &audio.samples,
         audio.sample_rate,
         &FormantSettings {
             max_formant,
+            // About one formant per 1.1 kHz: asking for more than the band holds invents some.
+            formants: ((max_formant / 1100.0).round() as usize).clamp(2, 5),
             ..Default::default()
         },
     );
@@ -335,6 +355,7 @@ fn analyze_clip(index: usize, name: &str, audio: &Audio, s: &SpeakerSettings) ->
             voiced: a.voiced_fraction,
             cycles: a.cycles.len(),
             median_f0: a.median_f0,
+            band: audio.sample_rate as f64 / 2.0,
         },
         cycles,
         jitter: (jit, jn),
@@ -653,6 +674,7 @@ fn assemble(results: Vec<ClipResult>, s: &SpeakerSettings) -> Result<SpeakerProf
         entries.push((
             VowelEntry {
                 label: lab,
+                formant_kinds: vec![FormantKind::Measured; formants.len()],
                 formants,
                 f0,
                 count: *count,
@@ -668,6 +690,15 @@ fn assemble(results: Vec<ClipResult>, s: &SpeakerSettings) -> Result<SpeakerProf
     }
     if entries.is_empty() {
         return Err("too few voiced cycles to build a vowel table".into());
+    }
+    // Fill in formants the recordings did not show, then name entries that lacked F2.
+    let mut vowels: Vec<VowelEntry> = entries.iter().map(|e| e.0.clone()).collect();
+    completion::complete(&mut vowels, s.voice);
+    for ((e, _, _), v) in entries.iter_mut().zip(vowels) {
+        if e.label == "?" && v.formants.len() >= 2 {
+            e.label = label(v.formants[0].freq, v.formants[1].freq, s.voice).to_string();
+        }
+        *e = v;
     }
     let order = path_order(&entries);
     let entries: Vec<(VowelEntry, Vec<f64>, usize)> =

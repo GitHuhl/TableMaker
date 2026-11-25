@@ -5,5 +5,5 @@
 pub mod bank;
 pub mod engine;
 
-pub use bank::Bank;
+pub use bank::{Bank, BankOptions, PulseShape};
 pub use engine::{Engine, Event, Params};
