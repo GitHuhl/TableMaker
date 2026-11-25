@@ -55,8 +55,14 @@ pub fn summary(p: &SpeakerProfile) -> String {
     let mut o = String::new();
     let secs: f64 = p.recordings.iter().map(|r| r.duration).sum();
     let voiced: f64 = p.recordings.iter().map(|r| r.duration * r.voiced).sum();
+    let who = match p.voice {
+        speaker::VoiceType::Auto => "",
+        speaker::VoiceType::Man => " (man)",
+        speaker::VoiceType::Woman => " (woman)",
+        speaker::VoiceType::Child => " (child)",
+    };
     o += &format!(
-        "Speaker   {} recordings, {secs:.1} s, {:.0}% voiced\n",
+        "Speaker{who}   {} recordings, {secs:.1} s, {:.0}% voiced\n",
         p.recordings.len(),
         100.0 * voiced / secs.max(1e-9)
     );

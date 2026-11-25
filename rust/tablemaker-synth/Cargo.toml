@@ -1,0 +1,10 @@
+[package]
+name = "tablemaker-synth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The real-time voice synthesizer TableMaker builds from a speaker profile"
+
+[dependencies]
+tablemaker-dsp.workspace = true
+rustfft.workspace = true

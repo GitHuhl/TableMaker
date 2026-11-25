@@ -14,12 +14,51 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+/// Who is speaking: narrows the pitch search, sets how high formants are
+/// looked for, and picks the reference vowels entries are named after.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VoiceType {
+    /// Decide from the recordings.
+    #[default]
+    Auto,
+    Man,
+    Woman,
+    Child,
+}
+
+impl VoiceType {
+    /// Pitch search range (Hz), wide enough for singing as well as speech.
+    pub fn pitch_range(self) -> (f64, f64) {
+        match self {
+            VoiceType::Auto => (50.0, 800.0),
+            VoiceType::Man => (60.0, 500.0),
+            VoiceType::Woman => (120.0, 1000.0),
+            VoiceType::Child => (180.0, 1100.0),
+        }
+    }
+
+    /// Highest formant to search for (Hz); for `Auto`, chosen from the median pitch.
+    pub fn max_formant(self, median_f0: f64) -> f64 {
+        match self {
+            VoiceType::Man => 5000.0,
+            VoiceType::Woman => 5500.0,
+            VoiceType::Child => 8000.0,
+            VoiceType::Auto if median_f0 < 165.0 => 5000.0,
+            VoiceType::Auto if median_f0 < 300.0 => 5500.0,
+            VoiceType::Auto => 6500.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SpeakerSettings {
+    pub voice: VoiceType,
     /// Most vowel entries to keep (similar ones are merged, rare ones dropped).
     pub vowels: usize,
-    pub fmin: f64,
-    pub fmax: f64,
+    /// Pitch search range (Hz); `None` takes the voice type's.
+    pub fmin: Option<f64>,
+    pub fmax: Option<f64>,
     /// Lowest cycle score kept: speech changes quickly, so lower than for held notes.
     pub min_score: f64,
     /// Highest formant to search for; `None` chooses from the speaker's pitch.
@@ -33,9 +72,10 @@ pub struct SpeakerSettings {
 impl Default for SpeakerSettings {
     fn default() -> Self {
         Self {
+            voice: VoiceType::Auto,
             vowels: 12,
-            fmin: 50.0,
-            fmax: 800.0,
+            fmin: None,
+            fmax: None,
             min_score: 0.8,
             max_formant: None,
             max_cycles_per_clip: 3000,
@@ -114,6 +154,7 @@ pub struct VowelPoint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SpeakerProfile {
     pub version: u32,
+    pub voice: VoiceType,
     pub recordings: Vec<RecordingSummary>,
     pub pitch: PitchStats,
     /// Mean period-to-period variation of length (%).
@@ -226,24 +267,14 @@ pub fn analyze(
     Ok(profile)
 }
 
-fn max_formant_for(f0: f64) -> f64 {
-    if f0 < 165.0 {
-        5000.0
-    } else if f0 < 300.0 {
-        5500.0
-    } else {
-        6500.0
-    }
-}
-
 fn analyze_clip(index: usize, name: &str, audio: &Audio, s: &SpeakerSettings) -> ClipResult {
     let ex = ExtractSettings {
         frame_size: 1024,
         min_score: s.min_score,
         tolerance: 0.04,
         pitch: PitchSettings {
-            fmin: s.fmin,
-            fmax: s.fmax,
+            fmin: s.fmin.unwrap_or(s.voice.pitch_range().0),
+            fmax: s.fmax.unwrap_or(s.voice.pitch_range().1),
             ..Default::default()
         },
         ..Default::default()
@@ -251,7 +282,7 @@ fn analyze_clip(index: usize, name: &str, audio: &Audio, s: &SpeakerSettings) ->
     let a = cycles::extract(audio, index, &ex);
     let max_formant = s
         .max_formant
-        .unwrap_or_else(|| max_formant_for(a.median_f0.unwrap_or(150.0)));
+        .unwrap_or_else(|| s.voice.max_formant(a.median_f0.unwrap_or(150.0)));
     let ftrack = formant::track(
         &audio.samples,
         audio.sample_rate,
@@ -449,32 +480,42 @@ fn kmeans(feats: &[&[f64]], k: usize) -> Vec<usize> {
     assign
 }
 
-/// Average adult vowel formants (F1, F2 in Hz), men and women, for naming entries.
-const REFERENCE: [(&str, [(f64, f64); 2]); 12] = [
-    ("i", [(342.0, 2322.0), (437.0, 2761.0)]),
-    ("ɪ", [(427.0, 2034.0), (483.0, 2365.0)]),
-    ("e", [(476.0, 2089.0), (536.0, 2530.0)]),
-    ("ɛ", [(580.0, 1799.0), (731.0, 2058.0)]),
-    ("æ", [(588.0, 1952.0), (669.0, 2349.0)]),
-    ("ɑ", [(768.0, 1333.0), (936.0, 1551.0)]),
-    ("ɔ", [(652.0, 997.0), (781.0, 1136.0)]),
-    ("o", [(497.0, 910.0), (555.0, 1035.0)]),
-    ("ʊ", [(469.0, 1122.0), (519.0, 1225.0)]),
-    ("u", [(378.0, 997.0), (459.0, 1105.0)]),
-    ("ʌ", [(623.0, 1200.0), (753.0, 1426.0)]),
-    ("ɝ", [(474.0, 1379.0), (523.0, 1588.0)]),
+/// Average vowel formants (F1, F2 in Hz) of men, women and children, for
+/// naming entries.
+const REFERENCE: [(&str, [(f64, f64); 3]); 12] = [
+    ("i", [(342.0, 2322.0), (437.0, 2761.0), (452.0, 3081.0)]),
+    ("ɪ", [(427.0, 2034.0), (483.0, 2365.0), (511.0, 2552.0)]),
+    ("e", [(476.0, 2089.0), (536.0, 2530.0), (564.0, 2656.0)]),
+    ("ɛ", [(580.0, 1799.0), (731.0, 2058.0), (749.0, 2267.0)]),
+    ("æ", [(588.0, 1952.0), (669.0, 2349.0), (717.0, 2501.0)]),
+    ("ɑ", [(768.0, 1333.0), (936.0, 1551.0), (1002.0, 1688.0)]),
+    ("ɔ", [(652.0, 997.0), (781.0, 1136.0), (803.0, 1210.0)]),
+    ("o", [(497.0, 910.0), (555.0, 1035.0), (597.0, 1137.0)]),
+    ("ʊ", [(469.0, 1122.0), (519.0, 1225.0), (568.0, 1490.0)]),
+    ("u", [(378.0, 997.0), (459.0, 1105.0), (494.0, 1345.0)]),
+    ("ʌ", [(623.0, 1200.0), (753.0, 1426.0), (749.0, 1546.0)]),
+    ("ɝ", [(474.0, 1379.0), (523.0, 1588.0), (586.0, 1719.0)]),
 ];
 
-/// The nearest reference vowel to F1/F2.
-pub fn label(f1: f64, f2: f64) -> &'static str {
+/// The nearest reference vowel to F1/F2, among the given voice type's
+/// references (all of them for `Auto`).
+pub fn label(f1: f64, f2: f64, voice: VoiceType) -> &'static str {
+    let groups: &[usize] = match voice {
+        VoiceType::Auto => &[0, 1, 2],
+        VoiceType::Man => &[0],
+        VoiceType::Woman => &[1],
+        VoiceType::Child => &[2],
+    };
     let d = |(a, b): (f64, f64)| (f1.ln() - a.ln()).powi(2) + (f2.ln() - b.ln()).powi(2);
+    let best = |r: &(&str, [(f64, f64); 3])| {
+        groups
+            .iter()
+            .map(|&g| d(r.1[g]))
+            .fold(f64::INFINITY, f64::min)
+    };
     REFERENCE
         .iter()
-        .min_by(|x, y| {
-            let dx = d(x.1[0]).min(d(x.1[1]));
-            let dy = d(y.1[0]).min(d(y.1[1]));
-            dx.total_cmp(&dy)
-        })
+        .min_by(|x, y| best(x).total_cmp(&best(y)))
         .map_or("?", |r| r.0)
 }
 
@@ -606,7 +647,7 @@ fn assemble(results: Vec<ClipResult>, s: &SpeakerSettings) -> Result<SpeakerProf
             })
             .collect();
         let lab = match (formants.first(), formants.get(1)) {
-            (Some(a), Some(b)) => label(a.freq, b.freq).to_string(),
+            (Some(a), Some(b)) => label(a.freq, b.freq, s.voice).to_string(),
             _ => "?".into(),
         };
         entries.push((
@@ -653,9 +694,10 @@ fn assemble(results: Vec<ClipResult>, s: &SpeakerSettings) -> Result<SpeakerProf
 
     let max_formant = s
         .max_formant
-        .unwrap_or_else(|| max_formant_for(pitch.median));
+        .unwrap_or_else(|| s.voice.max_formant(pitch.median));
     Ok(SpeakerProfile {
         version: SpeakerProfile::VERSION,
+        voice: s.voice,
         recordings,
         pitch,
         jitter: if jn > 0 {
@@ -841,9 +883,9 @@ mod tests {
                 "{file} mixed with others"
             );
             assert_eq!(v.label, label, "{file}: {:?}", v.formants);
-            for k in 0..2 {
+            for (k, w) in want.iter().take(2).enumerate() {
                 assert!(
-                    (v.formants[k].freq / want[k].0 - 1.0).abs() < 0.1,
+                    (v.formants[k].freq / w.0 - 1.0).abs() < 0.1,
                     "{file} F{}: {:?}",
                     k + 1,
                     v.formants
@@ -858,6 +900,36 @@ mod tests {
         assert!(!p.points.is_empty());
         // Round trip.
         assert_eq!(SpeakerProfile::from_json(&p.to_json()).unwrap(), p);
+    }
+
+    #[test]
+    fn voice_type_shapes_the_search_and_the_names() {
+        assert_eq!(VoiceType::Child.max_formant(400.0), 8000.0);
+        assert_eq!(VoiceType::Man.pitch_range(), (60.0, 500.0));
+        // 750/2270 Hz is a child's "ɛ", but not a man's.
+        assert_eq!(label(749.0, 2267.0, VoiceType::Child), "ɛ");
+        assert_ne!(label(749.0, 2267.0, VoiceType::Man), "ɛ");
+        // A child's voice is analysed with the child's pitch range: a 300 Hz voice
+        // gets one entry, at the right pitch.
+        let v = Voice {
+            f0: 300.0,
+            formants: vec![
+                (1000.0, 120.0),
+                (1690.0, 140.0),
+                (3200.0, 200.0),
+                (4300.0, 300.0),
+            ],
+            ..Default::default()
+        };
+        let s = SpeakerSettings {
+            voice: VoiceType::Child,
+            ..Default::default()
+        };
+        let p = analyze(&[clip("kid.wav", v, 1.0)], &s, &|_, _| {}).unwrap();
+        assert_eq!(p.voice, VoiceType::Child);
+        assert_eq!(p.max_formant, 8000.0);
+        assert!((p.pitch.median - 300.0).abs() < 5.0);
+        assert_eq!(p.vowels[0].label, "ɑ", "{:?}", p.vowels[0].formants);
     }
 
     #[test]

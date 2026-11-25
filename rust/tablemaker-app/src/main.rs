@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use tablemaker_dsp::cycles::{self, ClipAnalysis, ExtractSettings};
 use tablemaker_dsp::pitch::PitchSettings;
-use tablemaker_dsp::speaker::SpeakerSettings;
+use tablemaker_dsp::speaker::{SpeakerSettings, VoiceType};
 use tablemaker_dsp::table::{self, Morph, Normalize, Order, Select, TableSettings};
 use tablemaker_dsp::{preview, report, wav};
 
@@ -43,16 +43,21 @@ struct VoiceArgs {
     /// The voice file to write.
     #[arg(short, long, default_value = "voice.json")]
     output: PathBuf,
+    /// Who is speaking: sets the pitch search range, how high formants are looked
+    /// for, and the reference vowels entries are named after.
+    #[arg(short, long, value_enum, default_value_t = SpeakerArg::Auto)]
+    speaker: SpeakerArg,
     /// Most vowel entries in the table (similar ones are merged).
     #[arg(long, default_value_t = 12)]
     vowels: usize,
-    /// Lowest pitch of the voice (Hz).
-    #[arg(long, default_value_t = 50.0)]
-    fmin: f64,
-    /// Highest pitch of the voice (Hz).
-    #[arg(long, default_value_t = 800.0)]
-    fmax: f64,
-    /// Highest formant to look for (Hz). Default: chosen from the voice's pitch.
+    /// Lowest pitch of the voice (Hz). Default: from --speaker.
+    #[arg(long)]
+    fmin: Option<f64>,
+    /// Highest pitch of the voice (Hz). Default: from --speaker.
+    #[arg(long)]
+    fmax: Option<f64>,
+    /// Highest formant to look for (Hz). Default: from --speaker (5000 man, 5500 woman,
+    /// 8000 child; for auto, chosen from the voice's pitch).
     #[arg(long)]
     max_formant: Option<f64>,
 }
@@ -137,6 +142,15 @@ struct BuildArgs {
     report: Option<PathBuf>,
     #[command(flatten)]
     extract: ExtractArgs,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SpeakerArg {
+    /// Decide from the recordings.
+    Auto,
+    Man,
+    Woman,
+    Child,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -327,6 +341,12 @@ fn build(b: &BuildArgs) -> Result<(), String> {
 
 fn make_voice(v: &VoiceArgs) -> Result<(), String> {
     let s = SpeakerSettings {
+        voice: match v.speaker {
+            SpeakerArg::Auto => VoiceType::Auto,
+            SpeakerArg::Man => VoiceType::Man,
+            SpeakerArg::Woman => VoiceType::Woman,
+            SpeakerArg::Child => VoiceType::Child,
+        },
         vowels: v.vowels,
         fmin: v.fmin,
         fmax: v.fmax,

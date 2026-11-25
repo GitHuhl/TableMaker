@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["tablemaker-dsp", "tablemaker-app"]
+members = ["tablemaker-dsp", "tablemaker-synth", "tablemaker-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,11 +13,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 clap = { version = "4", features = ["derive"] }
 tablemaker-dsp = { path = "tablemaker-dsp" }
+tablemaker-synth = { path = "tablemaker-synth" }
 
 # Oversampling, pitch tracking and cycle rendering are heavy number crunching:
 # unoptimised, a few seconds of audio takes minutes (and so do the tests).
 # Optimised even in development builds; the rest stays quick to build.
 [profile.dev.package.tablemaker-dsp]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+# The synth renders in real time: unoptimised it misses its deadlines.
+[profile.dev.package.tablemaker-synth]
 opt-level = 3
 debug-assertions = false
 overflow-checks = false
