@@ -11,4 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 tablemaker-dsp.workspace = true
+tablemaker-synth.workspace = true
 clap.workspace = true
+cpal.workspace = true
+midir.workspace = true
+rtrb.workspace = true

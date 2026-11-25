@@ -187,7 +187,6 @@ pub struct Engine {
     /// Held notes in mono mode, latest last.
     stack: [u8; 128],
     stack_len: usize,
-    noise_gain: f32,
 }
 
 #[inline]
@@ -197,7 +196,7 @@ fn soft_clip(x: f32) -> f32 {
 }
 
 impl Engine {
-    pub fn new(bank: Arc<Bank>, params: Params, mean_hnr: f64) -> Self {
+    pub fn new(bank: Arc<Bank>, params: Params) -> Self {
         Self {
             sr: bank.sample_rate as f32,
             bank,
@@ -214,18 +213,12 @@ impl Engine {
             sustain_pedal: false,
             stack: [0; 128],
             stack_len: 0,
-            noise_gain: noise_gain(mean_hnr),
         }
     }
 
     /// An engine for a speaker at a sample rate, set up from their profile.
     pub fn for_profile(p: &SpeakerProfile, sample_rate: f64) -> Self {
-        let mean_hnr = p.vowels.iter().map(|v| v.hnr).sum::<f64>() / p.vowels.len().max(1) as f64;
-        Self::new(
-            Arc::new(Bank::new(p, sample_rate)),
-            Params::from_profile(p),
-            mean_hnr,
-        )
+        Self::new(Arc::new(Bank::new(p, sample_rate)), Params::from_profile(p))
     }
 
     pub fn params(&self) -> Params {
@@ -425,7 +418,7 @@ impl Engine {
             let (v0, v1) = (&bank.vowels[e0], &bank.vowels[e1]);
             let breath = p.breath
                 * self.breath_cc
-                * self.noise_gain
+                * bank.noise_gain
                 * (v0.breath + (v1.breath - v0.breath) * ef);
             let bend = 2f64.powf((self.bend * p.bend_range) as f64 / 12.0);
             let attack_step = dt / p.attack.max(0.001);
@@ -529,9 +522,4 @@ impl Engine {
         }
         out
     }
-}
-
-/// Noise level that gives the speaker's harmonics-to-noise ratio.
-fn noise_gain(hnr_db: f64) -> f32 {
-    10f64.powf(-hnr_db / 20.0).clamp(0.005, 0.7) as f32
 }

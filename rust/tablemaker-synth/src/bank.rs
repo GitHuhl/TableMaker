@@ -42,6 +42,8 @@ impl Vowel {
 pub struct Bank {
     pub sample_rate: f64,
     pub vowels: Vec<Vowel>,
+    /// Breath noise level giving the speaker's own harmonics-to-noise ratio.
+    pub noise_gain: f32,
 }
 
 /// The minimum-phase frequency response with the envelope's magnitude, on
@@ -145,6 +147,7 @@ impl Bank {
         Bank {
             sample_rate,
             vowels,
+            noise_gain: 10f64.powf(-mean_hnr / 20.0).clamp(0.005, 0.7) as f32,
         }
     }
 

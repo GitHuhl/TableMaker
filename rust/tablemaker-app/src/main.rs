@@ -1,5 +1,7 @@
 //! `tablemaker`: turn recordings of a voice into an instrument.
 
+mod live;
+mod perform;
 mod voice;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -7,9 +9,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use tablemaker_dsp::cycles::{self, ClipAnalysis, ExtractSettings};
 use tablemaker_dsp::pitch::PitchSettings;
-use tablemaker_dsp::speaker::{SpeakerSettings, VoiceType};
+use tablemaker_dsp::speaker::{SpeakerProfile, SpeakerSettings, VoiceType};
 use tablemaker_dsp::table::{self, Morph, Normalize, Order, Select, TableSettings};
 use tablemaker_dsp::{preview, report, wav};
+use tablemaker_synth::Params;
 
 #[derive(Parser)]
 #[command(name = "tablemaker", version, about = "Turn recordings of a voice into an instrument", long_about = None)]
@@ -23,6 +26,10 @@ enum Command {
     /// Analyse a speaker (files and/or directories) and write their voice file:
     /// pitch, voice quality and the vowel table the instrument plays.
     Voice(VoiceArgs),
+    /// Play a voice live from MIDI (a voice file, or recordings analysed on the spot).
+    Play(PlayArgs),
+    /// Render a short demo phrase of a voice to a WAV file.
+    Audition(AuditionArgs),
     /// Extract cycles from the clips and mash them into one wavetable.
     Build(BuildArgs),
     /// Report pitch and how many usable cycles each clip has, without writing a table.
@@ -60,6 +67,72 @@ struct VoiceArgs {
     /// 8000 child; for auto, chosen from the voice's pitch).
     #[arg(long)]
     max_formant: Option<f64>,
+}
+
+#[derive(Args)]
+struct PerformArgs {
+    /// Play one voice at a time, gliding between legato notes.
+    #[arg(long)]
+    mono: bool,
+    /// Keys from this MIDI note upward pick vowels instead of sounding.
+    #[arg(long)]
+    vowel_keys: Option<u8>,
+    /// Vibrato depth in cents (default: the speaker's own).
+    #[arg(long)]
+    vibrato: Option<f32>,
+    /// Breath noise, 1 = the speaker's own amount.
+    #[arg(long)]
+    breath: Option<f32>,
+}
+
+impl PerformArgs {
+    fn params(&self, p: &SpeakerProfile) -> Params {
+        let mut s = Params::from_profile(p);
+        s.mono = self.mono;
+        s.vowel_keys = self.vowel_keys;
+        if let Some(v) = self.vibrato {
+            s.vibrato_depth = v;
+        }
+        if let Some(b) = self.breath {
+            s.breath = b;
+        }
+        s
+    }
+}
+
+#[derive(Args)]
+struct PlayArgs {
+    /// A voice file, or WAV files and/or directories to analyse first.
+    #[arg(required_unless_present = "list")]
+    inputs: Vec<PathBuf>,
+    /// Who is speaking, when analysing recordings.
+    #[arg(short, long, value_enum, default_value_t = SpeakerArg::Auto)]
+    speaker: SpeakerArg,
+    /// Audio output device (part of its name).
+    #[arg(long)]
+    device: Option<String>,
+    /// MIDI inputs to use (part of their name, or "none"). Default: all.
+    #[arg(long)]
+    midi: Option<String>,
+    /// List audio outputs and MIDI inputs, then exit.
+    #[arg(long)]
+    list: bool,
+    #[command(flatten)]
+    perform: PerformArgs,
+}
+
+#[derive(Args)]
+struct AuditionArgs {
+    /// A voice file, or WAV files and/or directories to analyse first.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+    #[arg(short, long, value_enum, default_value_t = SpeakerArg::Auto)]
+    speaker: SpeakerArg,
+    /// The WAV file to write.
+    #[arg(short, long, default_value = "audition.wav")]
+    output: PathBuf,
+    #[command(flatten)]
+    perform: PerformArgs,
 }
 
 #[derive(Args)]
@@ -339,14 +412,45 @@ fn build(b: &BuildArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn make_voice(v: &VoiceArgs) -> Result<(), String> {
-    let s = SpeakerSettings {
-        voice: match v.speaker {
+impl SpeakerArg {
+    fn voice(self) -> VoiceType {
+        match self {
             SpeakerArg::Auto => VoiceType::Auto,
             SpeakerArg::Man => VoiceType::Man,
             SpeakerArg::Woman => VoiceType::Woman,
             SpeakerArg::Child => VoiceType::Child,
-        },
+        }
+    }
+}
+
+fn play(a: &PlayArgs) -> Result<(), String> {
+    if a.list {
+        println!("Audio outputs:");
+        for d in live::output_devices() {
+            println!("  {d}");
+        }
+        println!("MIDI inputs:");
+        for m in live::midi_inputs() {
+            println!("  {m}");
+        }
+        return Ok(());
+    }
+    let p = perform::profile_from(&a.inputs, a.speaker.voice())?;
+    let o = live::LiveOptions {
+        device: a.device.clone(),
+        midi: a.midi.clone(),
+    };
+    perform::play(&p, a.perform.params(&p), &o)
+}
+
+fn audition(a: &AuditionArgs) -> Result<(), String> {
+    let p = perform::profile_from(&a.inputs, a.speaker.voice())?;
+    perform::audition(&p, &a.output, a.perform.params(&p))
+}
+
+fn make_voice(v: &VoiceArgs) -> Result<(), String> {
+    let s = SpeakerSettings {
+        voice: v.speaker.voice(),
         vowels: v.vowels,
         fmin: v.fmin,
         fmax: v.fmax,
@@ -364,6 +468,8 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match &cli.command {
         Command::Voice(v) => make_voice(v),
+        Command::Play(a) => play(a),
+        Command::Audition(a) => audition(a),
         Command::Build(b) => build(b),
         Command::Analyze { clips, extract } => analyze(clips, &extract.settings(2048)).map(|_| ()),
     };

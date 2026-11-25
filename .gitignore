@@ -3,3 +3,4 @@
 .direnv/
 /rust/target/
 /rust/*/target/
+/rust/target-nix/
