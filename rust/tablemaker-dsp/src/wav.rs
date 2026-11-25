@@ -1,6 +1,6 @@
 //! WAV reading (any common PCM or float layout, mixed to mono) and writing,
-//! including wavetables tagged with the `clm ` chunk that Serum, Vital,
-//! Bitwig and others read the frame size from.
+//! including wavetables tagged with the `clm ` chunk that Vital, Surge XT,
+//! Bitwig and others read the frame size from, and Surge XT's own `.wt`.
 
 use std::fs;
 use std::io;
@@ -163,7 +163,8 @@ pub fn build(
         chunk(&mut body, b"fact", &(samples.len() as u32).to_le_bytes());
     }
     if let Some(frame) = clm_frame {
-        // "<!>" then the frame size padded to four characters, as Serum writes it.
+        // "<!>" then the frame size padded to four characters: the de facto layout
+        // every reader of this chunk expects.
         let text = format!("<!>{frame:<4} 00000000 wavetable (TableMaker)");
         chunk(&mut body, b"clm ", text.as_bytes());
     }
@@ -189,6 +190,33 @@ pub fn write_wavetable(
     let size = frames.first().map_or(0, Vec::len);
     let flat: Vec<f64> = frames.iter().flatten().copied().collect();
     fs::write(path, build(&flat, sample_rate, encoding, Some(size)))
+}
+
+/// Build a Surge XT `.wt` wavetable (see Surge's "WT fileformat.txt"):
+/// "vawt", frame size (power of two, 2..=4096), frame count (1..=512),
+/// flags, then the frames. 16-bit data uses the full range (flag 0x8).
+pub fn build_wt(frames: &[Vec<f64>], encoding: Encoding) -> Result<Vec<u8>, String> {
+    let size = frames.first().map_or(0, Vec::len);
+    if !(2..=4096).contains(&size) || !size.is_power_of_two() {
+        return Err(format!(
+            ".wt frames must be a power of two from 2 to 4096 samples, not {size}"
+        ));
+    }
+    if frames.is_empty() || frames.len() > 512 {
+        return Err(format!(".wt holds 1 to 512 frames, not {}", frames.len()));
+    }
+    let flags: u16 = match encoding {
+        Encoding::Float32 => 0,
+        Encoding::Pcm16 => 0x4 | 0x8,
+        Encoding::Pcm24 => return Err(".wt has no 24-bit format: use float32 or pcm16".into()),
+    };
+    let mut out = b"vawt".to_vec();
+    out.extend_from_slice(&(size as u32).to_le_bytes());
+    out.extend_from_slice(&(frames.len() as u16).to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    let flat: Vec<f64> = frames.iter().flatten().copied().collect();
+    out.extend_from_slice(&encode(&flat, encoding).2);
+    Ok(out)
 }
 
 /// The frame size from a `clm ` chunk, if the file has one.
@@ -232,6 +260,26 @@ mod tests {
         assert_eq!(parse(&bytes).unwrap().samples.len(), 2048 * 4);
         let small = build(&vec![0.0; 256], 44100, Encoding::Float32, Some(256));
         assert_eq!(clm_frame_size(&small), Some(256));
+    }
+
+    #[test]
+    fn writes_surge_wt() {
+        let frames = vec![vec![0.5; 256], vec![-0.25; 256]];
+        let b = build_wt(&frames, Encoding::Float32).unwrap();
+        assert_eq!(&b[0..4], b"vawt");
+        assert_eq!(u32::from_le_bytes(b[4..8].try_into().unwrap()), 256);
+        assert_eq!(u16::from_le_bytes([b[8], b[9]]), 2);
+        assert_eq!(u16::from_le_bytes([b[10], b[11]]), 0);
+        assert_eq!(b.len(), 12 + 4 * 512);
+        assert_eq!(
+            f32::from_le_bytes(b[12 + 4 * 256..16 + 4 * 256].try_into().unwrap()),
+            -0.25
+        );
+        let i16s = build_wt(&frames, Encoding::Pcm16).unwrap();
+        assert_eq!(u16::from_le_bytes([i16s[10], i16s[11]]), 0xC);
+        assert_eq!(i16::from_le_bytes([i16s[12], i16s[13]]), 16384);
+        assert!(build_wt(&[vec![0.0; 300]], Encoding::Float32).is_err());
+        assert!(build_wt(&frames, Encoding::Pcm24).is_err());
     }
 
     #[test]

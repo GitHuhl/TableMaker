@@ -6,8 +6,8 @@ Give TableMaker a few audio clips of the same source (notes of a synth,
 a sung vowel, a bowed string, a field recording with a pitch in it). It
 finds every clean single cycle in them, cuts each exactly at its zero
 crossings, and mashes the cycles from all the clips together into one
-morphable wavetable that Serum, Vital, Bitwig's Wavetable oscillator and
-others load directly.
+morphable wavetable for Vital, Surge XT, Bitwig's Wavetable oscillator
+and the many other synths that read the same format.
 
 ```sh
 nix run github:GitHuhl/TableMaker -- build cello-*.wav -o cello.wav --order path --preview cello-preview.wav
@@ -52,7 +52,8 @@ tablemaker build clips/*.wav -o table.wav \
 | Option | What it does |
 | --- | --- |
 | `-f, --frames` | Frames in the table (default 64). |
-| `--frame-size` | Samples per frame (default 2048, what Serum and Vital expect). |
+| `-o, --output` | `table.wav`: frames back to back with a `clm ` chunk giving the frame size (Vital, Surge XT, Bitwig, most others). `table.wt`: Surge XT's native format (powers of two up to 4096 samples, at most 512 frames, float32 or pcm16). |
+| `--frame-size` | Samples per frame (default 2048, the common choice). |
 | `-k, --keyframes` | Distinct cycles used; the frames between them are morphed. |
 | `--select spread\|best\|diverse` | Evenly through the clips' timeline; the cleanest cycles; or the most different-sounding ones. |
 | `--order time\|brightness\|path` | Clip order then time; dark to bright; or the shortest path through spectral space, each frame beside its closest relatives. |

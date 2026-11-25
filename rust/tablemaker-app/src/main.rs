@@ -59,13 +59,14 @@ struct BuildArgs {
     /// WAV clips of one source (any channel count, PCM or float).
     #[arg(required = true)]
     clips: Vec<PathBuf>,
-    /// The wavetable to write (WAV, frames back to back, with a `clm ` chunk).
+    /// The wavetable to write: `.wt` for Surge XT's own format, otherwise a WAV with the
+    /// frames back to back and a `clm ` chunk (Vital, Surge XT, Bitwig and most others).
     #[arg(short, long)]
     output: PathBuf,
     /// Frames in the table.
     #[arg(short, long, default_value_t = 64)]
     frames: usize,
-    /// Samples per frame (2048 for Serum and Vital).
+    /// Samples per frame (2048 is the common choice; `.wt` takes powers of two up to 4096).
     #[arg(long, default_value_t = 2048)]
     frame_size: usize,
     /// Distinct cycles to use; the frames between them are morphed. Default: one per frame.
@@ -256,8 +257,17 @@ fn build(b: &BuildArgs) -> Result<(), String> {
         FormatArg::Pcm24 => wav::Encoding::Pcm24,
     };
     const TABLE_RATE: u32 = 44100;
-    wav::write_wavetable(&b.output, &t.frames, TABLE_RATE, encoding)
-        .map_err(|e| format!("{}: {e}", b.output.display()))?;
+    let is_wt = b
+        .output
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("wt"));
+    if is_wt {
+        let bytes = wav::build_wt(&t.frames, encoding)?;
+        std::fs::write(&b.output, bytes).map_err(|e| format!("{}: {e}", b.output.display()))?;
+    } else {
+        wav::write_wavetable(&b.output, &t.frames, TABLE_RATE, encoding)
+            .map_err(|e| format!("{}: {e}", b.output.display()))?;
+    }
     eprintln!(
         "wrote {}: {} frames of {} samples from {} cycles",
         b.output.display(),
