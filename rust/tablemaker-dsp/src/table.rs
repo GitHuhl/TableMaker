@@ -413,7 +413,9 @@ mod tests {
             time,
             f0: 100.0,
             score: 0.99,
+            periodicity: 0.99,
             rms: 0.5,
+            band_limit: 22050.0,
             frame,
         }
     }

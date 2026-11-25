@@ -9,9 +9,15 @@
 //! in between.
 
 pub mod cycles;
+pub mod envelope;
+pub mod formant;
+pub mod lpc;
 pub mod pitch;
 pub mod preview;
 pub mod report;
+pub mod resample;
 pub mod signal;
 pub mod table;
+#[doc(hidden)]
+pub mod testsignal;
 pub mod wav;

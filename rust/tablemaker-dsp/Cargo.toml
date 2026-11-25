@@ -7,3 +7,5 @@ description = "Cycle extraction and wavetable assembly from audio clips"
 
 [dependencies]
 rustfft.workspace = true
+serde.workspace = true
+serde_json.workspace = true

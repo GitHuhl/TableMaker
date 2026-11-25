@@ -9,6 +9,8 @@ license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 rustfft = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 tablemaker-dsp = { path = "tablemaker-dsp" }
 

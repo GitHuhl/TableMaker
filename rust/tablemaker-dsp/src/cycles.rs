@@ -47,7 +47,13 @@ pub struct Cycle {
     /// Periodicity (correlation with the following period) weighted by how
     /// well the slopes at its two ends match.
     pub score: f64,
+    /// Correlation with the following period alone (1 = perfectly periodic);
+    /// what is missing is noise or change, e.g. breath.
+    pub periodicity: f64,
     pub rms: f64,
+    /// Highest frequency the recording holds (half its sample rate), in Hz.
+    pub band_limit: f64,
+    /// The cycle at the frame size: bin h of its spectrum is harmonic h.
     pub frame: Vec<f64>,
 }
 
@@ -67,6 +73,7 @@ struct Candidate {
     start: f64,
     len: f64,
     score: f64,
+    periodicity: f64,
     rms: f64,
 }
 
@@ -107,11 +114,12 @@ pub fn extract(audio: &Audio, clip: usize, s: &ExtractSettings) -> ClipAnalysis 
         if (len / period - 1.0).abs() > s.tolerance || end.pos + len + edge >= xo.len() as f64 {
             continue;
         }
-        let (score, rms) = score(&xo, c, &end, len);
+        let (score, periodicity, rms) = score(&xo, c, &end, len);
         cands.push(Candidate {
             start: c.pos,
             len,
             score,
+            periodicity,
             rms,
         });
     }
@@ -146,7 +154,9 @@ pub fn extract(audio: &Audio, clip: usize, s: &ExtractSettings) -> ClipAnalysis 
             time: c.start / osr,
             f0: osr / c.len,
             score: c.score,
+            periodicity: c.periodicity,
             rms: c.rms,
+            band_limit: sr as f64 / 2.0,
             frame: render(&mut fft, &xo, c.start, c.len, f, s.frame_size),
         })
         .collect();
@@ -177,7 +187,7 @@ fn nearest(c: &[Crossing], target: f64) -> Option<usize> {
 
 /// Correlation of the cycle with the period that follows it, weighted by
 /// the match of the slopes at its two ends (a mismatch clicks on loop).
-fn score(xo: &[f64], start: &Crossing, end: &Crossing, len: f64) -> (f64, f64) {
+fn score(xo: &[f64], start: &Crossing, end: &Crossing, len: f64) -> (f64, f64, f64) {
     let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
     for k in 0..SCORE_POINTS {
         let t = len * k as f64 / SCORE_POINTS as f64;
@@ -198,7 +208,11 @@ fn score(xo: &[f64], start: &Crossing, end: &Crossing, len: f64) -> (f64, f64) {
     } else {
         0.0
     };
-    (corr * slope.powf(0.25), (aa / SCORE_POINTS as f64).sqrt())
+    (
+        corr * slope.powf(0.25),
+        corr,
+        (aa / SCORE_POINTS as f64).sqrt(),
+    )
 }
 
 /// Render the cycle [start, start + len) of the oversampled signal to
